@@ -11,7 +11,7 @@ Currently, the difficulties which needs to be resolved are:
   -The worker may take photos at various extreme angles, which are not likely to be covered by training dataset.
   -General quality of the input image, real world conditions may very which can cause changes in factors such as contrast, exposure, etc
 
-To achieve this objjective, I am desiging and implementing a spatial transformer module on top of a 11-layer CNN outfitted with attention mechanisms. 
+To achieve this objective, I am desiging and implementing a spatial transformer module on top of a 11-layer CNN outfitted with attention mechanisms. 
 
 
 Refrences:
