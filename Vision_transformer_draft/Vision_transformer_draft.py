@@ -76,37 +76,36 @@ def mlp(x, hidden_units, dropout_rate):
 
 """
 ## Implement patch creation as a layer
+
+Takes the dimention of the patch and the input image,
+then the dimentions of a input patch is used to calculate the number of patches can be produced.
+Patches of set size are extracted in sequence and reshaped from 4D to 3D, patch dimention is flattened along axis.
 """
 
-
-class Patches(Layer):
-    def __init__(self, patch_size):
-        super().__init__()
-        self.patch_size = patch_size
-
-    def call(self, images):
-        input_shape = ops.shape(images)
-        batch_size = input_shape[0]
-        height = input_shape[1]
-        width = input_shape[2]
-        channels = input_shape[3]
-        num_patches_h = height // self.patch_size
-        num_patches_w = width // self.patch_size
-        patches = keras.ops.image.extract_patches(images, size=self.patch_size)
-        patches = ops.reshape(
-            patches,
-            (
-                batch_size,
+def Patches(patch_size, augmented):
+    input_shape = tf.shape(augmented)
+    batch_size = input_shape[0]
+    height = input_shape[1]
+    width = input_shape[2]
+    channels = input_shape[3]
+    
+    num_patches_h = height // patch_size
+    num_patches_w = width // patch_size
+    
+    patches = tf.image.extract_patches(augmented, sizes = [1, patch_size, patch_size, 1], strides = [1, patch_size, patch_size, 1], rates=[1, 1, 1, 1], padding='VALID')
+    patches = tf.reshape(patches, [batch_size,
                 num_patches_h * num_patches_w,
-                self.patch_size * self.patch_size * channels,
-            ),
-        )
-        return patches
+                patch_size * patch_size * channels])
+    
+    return patches
+    
 
-    def get_config(self):
-        config = super().get_config()
-        config.update({"patch_size": self.patch_size})
-        return config
+def PatchEncoder(patches):
+    # Linearly embed the patches
+    embed = layers.Conv2D(projection_dim, kernel_size=1, strides=1, padding='same', activation='linear')(patches)
+    return tf.reshape(embed, [batch_size,
+                num_patches,
+                projection_dim])    
 
 
 """
@@ -121,7 +120,7 @@ plt.axis("off")
 resized_image = ops.image.resize(
     ops.convert_to_tensor([image]), size=(image_size, image_size)
 )
-patches = Patches(patch_size)(resized_image)
+patches = Patches(patch_size, resized_image)
 print(f"Image size: {image_size} X {image_size}")
 print(f"Patch size: {patch_size} X {patch_size}")
 print(f"Patches per image: {patches.shape[1]}")
@@ -134,37 +133,6 @@ for i, patch in enumerate(patches[0]):
     patch_img = ops.reshape(patch, (patch_size, patch_size, 3))
     plt.imshow(ops.convert_to_numpy(patch_img).astype("uint8"))
     plt.axis("off")
-
-"""
-## Implement the patch encoding layer
-
-The `PatchEncoder` layer will linearly transform a patch by projecting it into a
-vector of size `projection_dim`. In addition, it adds a learnable position
-embedding to the projected vector.
-"""
-
-
-class PatchEncoder(Layer):
-    def __init__(self, num_patches, projection_dim):
-        super().__init__()
-        self.num_patches = num_patches
-        self.projection = layers.Dense(units=projection_dim)
-        self.position_embedding = layers.Embedding(
-            input_dim=num_patches, output_dim=projection_dim
-        )
-
-    def call(self, patch):
-        positions = ops.expand_dims(
-            ops.arange(start=0, stop=self.num_patches, step=1), axis=0
-        )
-        projected_patches = self.projection(patch)
-        encoded = projected_patches + self.position_embedding(positions)
-        return encoded
-
-    def get_config(self):
-        config = super().get_config()
-        config.update({"num_patches": self.num_patches})
-        return config
 
 
 """
@@ -192,9 +160,9 @@ def create_vit_classifier():
     # Augment data.
     augmented = data_augmentation(inputs)
     # Create patches.
-    patches = Patches(patch_size)(augmented)
+    patches = Patches(patch_size, augmented)
     # Encode patches.
-    encoded_patches = PatchEncoder(num_patches, projection_dim)(patches)
+    encoded_patches = PatchEncoder(patches)
 
     # Create multiple layers of the Transformer block.
     for _ in range(transformer_layers):
