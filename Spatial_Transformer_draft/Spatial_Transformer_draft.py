@@ -13,10 +13,23 @@ import matplotlib.pyplot as plt
 import cv2
 
 
+"""
+This solution implements a spatial transformer which corrects the orientations of the input image
+content through spatial transformations on the x, y axis. 
+The corrected feature maps are then fed through a standard multi-layer CNN to be trained the
+standard way.
+
+Input training and validation image sequences are controlled by two ImageDataGenerator under the tensorflow.keras api.
+"""
+
+
 ##Hyperparameters + Global Variables##
 num_classes = 3
 batch_size = 128
 num_epochs = 30
+LR = 0.001
+train_data_generator = 
+validation_data_generator = 
 
 
 
@@ -74,7 +87,8 @@ def CNN(input_tensor):
 
     model = models.Model(inputs=input_tensor, outputs=output_tensor)
     
-    model.compile(optimizer = 'adam',  # Adam optimizer
+    optimizer = tf.optimizers.Adam(learning_rate = LR)
+    model.compile(optimizer = optimizer,  # Adam optimizer
               loss = 'categorical_crossentropy',
               metrics = ['accuracy'])
     
@@ -107,7 +121,7 @@ def spatial_transformer(feature_map, affine_mat, output_size, channels):    # Pe
         x = 0.5 * (1.0 + sampled_grid[:, 0, :]) * tf.cast(in_w, tf.float32)
         y = 0.5 * (1.0 + sampled_grid[:, 1, :]) * tf.cast(in_h, tf.float32)  # [None, HW], float32, range: [0, H]
 
-        x0 = tf.cast(tf.floor(x), tf.int32)
+        x0 = tf.cast(tf.floor(x), tf.int32)     # Round down to set the bound for the 4 edges
         y0 = tf.cast(tf.floor(y), tf.int32)
         x0 = tf.clip_by_value(x0, 0, max_x - 1)
         y0 = tf.clip_by_value(y0, 0, max_y - 1)
