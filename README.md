@@ -13,7 +13,12 @@ Currently, the difficulties which needs to be resolved are:
 
 To achieve this objective, I am desiging and implementing a spatial transformer module on top of a 11-layer CNN outfitted with attention mechanisms. 
 
+UPDATE- Due to the limitation and difficulty of incorprating attention mechanism in CNN, which is likely to result in a noticible performance
+uplift in this application due to the high number of miscellaneous elements present in the input image. Instead I am developing in parallel a Vision Transformer module with high number of self attention layers in addition to a spatial transformer. 
+
 
 Refrences:
 https://arxiv.org/pdf/1412.7755.pdf
 https://arxiv.org/abs/1506.02025
+https://arxiv.org/pdf/1409.0473.pdf
+https://arxiv.org/pdf/2010.11929.pdf
