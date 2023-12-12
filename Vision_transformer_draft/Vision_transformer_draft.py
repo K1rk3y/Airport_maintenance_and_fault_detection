@@ -102,10 +102,14 @@ def Patches(patch_size, augmented):
 
 def PatchEncoder(patches):
     # Linearly embed the patches
-    embed = layers.Conv2D(projection_dim, kernel_size=1, strides=1, padding='same', activation='linear')(patches)
-    return tf.reshape(embed, [batch_size,
-                num_patches,
-                projection_dim])    
+    positions = ops.expand_dims(
+            ops.arange(start=0, stop=num_patches, step=1), axis=0
+            )
+    positions = tf.reshape(positions, (1, 1, 1, -1))
+    embed = layers.Conv2D(projection_dim, kernel_size=1, strides=1, padding='same', activation='linear')(positions)
+    projections = layers.Dense(units=projection_dim)(patches)
+    
+    return projections + embed   # Adds positional embeddings to every patch in the sequence 
 
 
 """
@@ -135,6 +139,61 @@ for i, patch in enumerate(patches[0]):
     plt.axis("off")
 
 
+def spatial_transformer(feature_map, affine_mat, output_size, channels):    # Performs spatial transformation, returns the modified feature map tensor
+        # feature map: [None, H, W, C]
+        # affine_mat: [None, 6]
+        # output_size: (H, W)
+        num_batch, in_h, in_w = tf.shape(feature_map)[0], tf.shape(feature_map)[1], tf.shape(feature_map)[2]    # Batch number, height and width
+        out_h, out_w = output_size  # Output size is the original 4D tensor size, preserved 
+
+        # step 1. affine grid
+        x = tf.linspace(-1.0, 1.0, out_w)
+        y = tf.linspace(-1.0, 1.0, out_h)
+        regular_x, regular_y = tf.meshgrid(x, y)
+        reg_flatx, reg_flaty = tf.reshape(regular_x, [-1]), tf.reshape(regular_y, [-1]) # [None, HW]
+        regular_grid = tf.stack([reg_flatx, reg_flaty, tf.ones_like(reg_flatx)])  # [3, HW]
+        regular_grid = tf.expand_dims(regular_grid, axis=0)  # [1, 3, HW]
+        regular_grid = tf.tile(regular_grid, [num_batch, 1, 1])  # [None, 3, HW]
+
+        theta = tf.cast(tf.reshape(affine_mat, [-1, 2, 3]), tf.float32)
+        regular_grid = tf.cast(regular_grid, tf.float32)
+        sampled_grid = tf.matmul(theta, regular_grid)  # [None, 2, 3] x [None, 3, HW]=>[None, 2, HW]
+
+        # step 2. sampler
+        max_x = tf.cast(in_w - 1, 'int32')
+        max_y = tf.cast(in_h - 1, 'int32')
+        x = 0.5 * (1.0 + sampled_grid[:, 0, :]) * tf.cast(in_w, tf.float32)
+        y = 0.5 * (1.0 + sampled_grid[:, 1, :]) * tf.cast(in_h, tf.float32)  # [None, HW], float32, range: [0, H]
+
+        x0 = tf.cast(tf.floor(x), tf.int32)     # Round down to set the bound for the 4 edges
+        y0 = tf.cast(tf.floor(y), tf.int32)
+        x0 = tf.clip_by_value(x0, 0, max_x - 1)
+        y0 = tf.clip_by_value(y0, 0, max_y - 1)
+
+        x1 = tf.clip_by_value(x0 + 1, 0, max_x)
+        y1 = tf.clip_by_value(y0 + 1, 0, max_y)  # [None, HW], int32, range: [0, H]
+
+        batch_idx = tf.reshape(tf.range(0, num_batch), [-1, 1])
+        batch_idx = tf.tile(batch_idx, (1, out_h * out_w))  # [None, HW]
+        y0x0 = tf.gather_nd(feature_map, tf.stack([batch_idx, y0, x0], axis=-1))
+        y1x0 = tf.gather_nd(feature_map, tf.stack([batch_idx, y1, x0], axis=-1))
+        y0x1 = tf.gather_nd(feature_map, tf.stack([batch_idx, y0, x1], axis=-1))
+        y1x1 = tf.gather_nd(feature_map, tf.stack([batch_idx, y1, x1], axis=-1))  # [None*HW, C]
+
+        x0, x1 = tf.cast(x0, tf.float32), tf.cast(x1, tf.float32)
+        y0, y1 = tf.cast(y0, tf.float32), tf.cast(y1, tf.float32)
+
+        w00 = (x1 - x) * (y1 - y)
+        w10 = (x1 - x) * (y - y0)
+        w01 = (x - x0) * (y1 - y)
+        w11 = (x - x0) * (y - y0)  # [None, HW]
+
+        return tf.add_n([tf.reshape(w00, [-1, out_h, out_w, 1]) * tf.reshape(y0x0, [-1, out_h, out_w, channels]),
+                         tf.reshape(w10, [-1, out_h, out_w, 1]) * tf.reshape(y1x0, [-1, out_h, out_w, channels]),
+                         tf.reshape(w01, [-1, out_h, out_w, 1]) * tf.reshape(y0x1, [-1, out_h, out_w, channels]),
+                         tf.reshape(w11, [-1, out_h, out_w, 1]) * tf.reshape(y1x1, [-1, out_h, out_w, channels])])
+
+
 """
 ## Build the ViT model
 
@@ -156,11 +215,31 @@ especially when the number of patches and the projection dimensions are large.
 
 
 def create_vit_classifier():
+    if sampling_size is None:
+        sampling_size = (input_shape[0], input_shape[1])    # Defaults to width and height
+        
     inputs = keras.Input(shape=input_shape)
+    
     # Augment data.
     augmented = data_augmentation(inputs)
+
+    input_ph = tf.reshape(augmented, [None, *augmented])   # Might be a problem, needs to test the shape of "augmented"
+    
+    locnet = layers.Flatten()(input_ph)     # Flattern the input tensor to be passed into a dense layer
+    locnet = layers.Dense(20, activation='relu')(locnet)    # Applies relu activation to achieve non-linearity, sets the output shape to [None, 20]
+        
+    custom_kernel_initializer = tf.initializers.Zeros()     # Initializes the weight matrix to all 0
+    custom_bias_initializer = tf.constant_initializer([1.0, 0, 0, 0, 1, 0])     # Initializes the bias matrix to identity matrix, encouraging mirror transformations
+
+    affine_mat = layers.Dense(units = 6,    # Creates the affine matrix, the output is set to [None, 6] coresponding to the 6 factors needed for spatial transformation
+                              activation = 'tanh',      # Ensures the value range is within 0 and 1
+                              kernel_initializer = custom_kernel_initializer, 
+                              bias_initializer = custom_bias_initializer)(locnet)
+
+    input_tensor = spatial_transformer(input_ph, affine_mat, sampling_size, input_shape[-1])    # Performs spatial transformation, returns the modified feature map tensor    
+
     # Create patches.
-    patches = Patches(patch_size, augmented)
+    patches = Patches(patch_size, input_tensor)  #May have problem with compatitble shape
     # Encode patches.
     encoded_patches = PatchEncoder(patches)
 
@@ -191,6 +270,7 @@ def create_vit_classifier():
     logits = layers.Dense(num_classes)(features)
     # Create the Keras model.
     model = keras.Model(inputs=inputs, outputs=logits)
+    
     return model
 
 
